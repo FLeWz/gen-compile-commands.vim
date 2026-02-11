@@ -31,7 +31,6 @@ def detect_compiler_names():
 
 
 def run_make_dry_run(make_args):
-    """Run `make -n` and capture output."""
     result = subprocess.run(
         ["make", "-n"] + make_args,
         stdout=subprocess.PIPE,
@@ -43,7 +42,6 @@ def run_make_dry_run(make_args):
 
 
 def extract_compile_commands(make_output, compiler_prefixes):
-    """Parse compiler commands from make -n output."""
     compile_cmds = []
 
     for line in make_output.splitlines():
@@ -51,12 +49,61 @@ def extract_compile_commands(make_output, compiler_prefixes):
         if not stripped:
             continue
 
-        # Check whether line starts with any valid compiler executable
-        if not any(stripped.startswith(c) for c in compiler_prefixes):
+        # Remove leading '@'
+        stripped = stripped.lstrip("@").strip()
+
+        # Remove surrounding parentheses: ( ... )
+        if stripped.startswith("(") and stripped.endswith(")"):
+            stripped = stripped[1:-1].strip()
+
+        # Remove leading 'set ...;' chains
+        stripped = re.sub(r'^\s*(set\s+[^\;]+;\s*)+', '', stripped)
+
+        # Split chained commands on && and ;
+        segments = re.split(r'\s*(?:&&|;)\s*', stripped)
+
+        current_dir = os.getcwd()
+        compiler_cmd = None
+
+        for seg in segments:
+            seg = seg.strip()
+            if not seg:
+                continue
+
+            # Ignore echo commands completely
+            if seg.startswith("echo "):
+                continue
+
+            # Handle cd commands (cd dir, cd "dir", etc.)
+            if seg.startswith("cd "):
+                try:
+                    parts = shlex.split(seg)
+                    if len(parts) >= 2:
+                        new_dir = parts[1]
+
+                        if not os.path.isabs(new_dir):
+                            current_dir = os.path.normpath(
+                                os.path.join(current_dir, new_dir)
+                            )
+                        else:
+                            current_dir = os.path.normpath(new_dir)
+                except ValueError:
+                    pass
+                continue
+
+            # Detect compiler invocation
+            if any(seg.startswith(c) for c in compiler_prefixes):
+                compiler_cmd = seg
+                break
+
+        if not compiler_cmd:
             continue
 
-        # Tokenize safely
-        parts = shlex.split(stripped)
+        # Tokenize compiler command safely
+        try:
+            parts = shlex.split(compiler_cmd)
+        except ValueError:
+            continue
 
         # Identify source file
         src = None
@@ -67,11 +114,16 @@ def extract_compile_commands(make_output, compiler_prefixes):
         if not src:
             continue
 
+        # Normalize source path relative to final directory
+        if not os.path.isabs(src):
+            src = os.path.normpath(os.path.join(current_dir, src))
+
         entry = {
-            "directory": os.getcwd(),
-            "command": stripped,
+            "directory": current_dir,
+            "command": compiler_cmd,
             "file": src,
         }
+
         compile_cmds.append(entry)
 
     return compile_cmds
