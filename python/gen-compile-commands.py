@@ -6,6 +6,13 @@ import shlex
 import subprocess
 import sys
 
+# clang does not recognize lp64 arm flags
+# and fails to start/provide hints
+BAD_FLAGS = {
+    "-mabi=lp64",
+    "-mabi=lp64d",
+}
+
 def detect_compiler_names():
     """
     Determine compiler executable names the Makefile might use.
@@ -30,7 +37,6 @@ def detect_compiler_names():
             seen.add(c)
     return tuple(out)
 
-
 def run_make_dry_run(make_args):
     result = subprocess.run(
         ["make", "-n"] + make_args,
@@ -41,6 +47,10 @@ def run_make_dry_run(make_args):
     )
     return result.stdout
 
+def sanitize_command(cmd: str) -> str:
+    parts = cmd.split()
+    parts = [p for p in parts if p not in BAD_FLAGS]
+    return " ".join(parts)
 
 def extract_compile_commands(make_output, compiler_prefixes):
     compile_cmds = []
@@ -119,9 +129,11 @@ def extract_compile_commands(make_output, compiler_prefixes):
         if not os.path.isabs(src):
             src = os.path.normpath(os.path.join(current_dir, src))
 
+        clean_cmd = sanitize_command(compiler_cmd)
+
         entry = {
             "directory": current_dir,
-            "command": compiler_cmd,
+            "command": clean_cmd,
             "file": src,
         }
 
@@ -129,12 +141,10 @@ def extract_compile_commands(make_output, compiler_prefixes):
 
     return compile_cmds
 
-
 def write_compile_commands(entries, output_file="compile_commands.json"):
     with open(output_file, "w") as f:
         json.dump(entries, f, indent=2)
     print(f"Generated {output_file} with {len(entries)} entries.")
-
 
 def main():
     make_args = sys.argv[1:]
